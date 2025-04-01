@@ -120,36 +120,75 @@ struct DBScan : NonCopyable {
                     }
                 );
             }
-        } else if (f.tags.size()) {
+        } else if (f.tags.size() || f.tagsByName.size()) {
             indexDbi = env.dbi_Event__tag;
             desc = "Tag";
 
-            char tagName = '\0';
-            {
-                uint64_t numTags = MAX_U64;
-                for (const auto &[tn, filterSet] : f.tags) {
-                    if (filterSet.size() < numTags) {
-                        numTags = filterSet.size();
-                        tagName = tn;
-                    }
+            // Determine which tag to use for the initial scan (choose the one with fewest values)
+            char singleCharTagName = '\0';
+            std::string multiCharTagName;
+            bool useSingleCharTag = true;
+            uint64_t numTags = MAX_U64;
+            
+            // Check single-character tags first
+            for (const auto &[tn, filterSet] : f.tags) {
+                if (filterSet.size() < numTags) {
+                    numTags = filterSet.size();
+                    singleCharTagName = tn;
+                    useSingleCharTag = true;
+                }
+            }
+            
+            // Then check multi-character tags
+            for (const auto &[tn, filterSet] : f.tagsByName) {
+                if (filterSet.size() < numTags) {
+                    numTags = filterSet.size();
+                    multiCharTagName = tn;
+                    useSingleCharTag = false;
                 }
             }
 
-            const auto &filterSet = f.tags.at(tagName);
+            if (useSingleCharTag) {
+                // Use single-character tag for scanning
+                const auto &filterSet = f.tags.at(singleCharTagName);
 
-            cursors.reserve(filterSet.size());
-            for (uint64_t i = 0; i < filterSet.size(); i++) {
-                std::string search;
-                search += tagName;
-                search += filterSet.at(i);
+                cursors.reserve(filterSet.size());
+                for (uint64_t i = 0; i < filterSet.size(); i++) {
+                    std::string search;
+                    search += singleCharTagName;
+                    search += filterSet.at(i);
 
-                cursors.emplace_back(
-                    search + std::string(8, '\xFF'),
-                    MAX_U64,
-                    [search](std::string_view k){
-                        return k.size() == search.size() + 8 && k.starts_with(search) ? KeyMatchResult::Yes : KeyMatchResult::No;
-                    }
-                );
+                    cursors.emplace_back(
+                        search + std::string(8, '\xFF'),
+                        MAX_U64,
+                        [search](std::string_view k){
+                            return k.size() == search.size() + 8 && k.starts_with(search) ? KeyMatchResult::Yes : KeyMatchResult::No;
+                        }
+                    );
+                }
+            } else {
+                // Use multi-character tag for scanning
+                const auto &filterSet = f.tagsByName.at(multiCharTagName);
+                
+                // For multi-character tags, we need to use the first character for the database lookup
+                char firstChar = multiCharTagName.size() > 0 ? multiCharTagName[0] : '\0';
+
+                cursors.reserve(filterSet.size());
+                for (uint64_t i = 0; i < filterSet.size(); i++) {
+                    std::string search;
+                    search += firstChar;
+                    search += filterSet.at(i);
+
+                    cursors.emplace_back(
+                        search + std::string(8, '\xFF'),
+                        MAX_U64,
+                        [search, firstChar, multiCharTagName](std::string_view k){
+                            // We need to check if the tag name matches our multi-character tag
+                            // But for database scanning, we can only use the first character
+                            return k.size() == search.size() + 8 && k.starts_with(search) ? KeyMatchResult::Yes : KeyMatchResult::No;
+                        }
+                    );
+                }
             }
         } else if (f.authors && f.kinds && f.authors->size() * f.kinds->size() < 1'000) {
             indexDbi = env.dbi_Event__pubkeyKind;
