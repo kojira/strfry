@@ -1,0 +1,11 @@
+services:
+  strfry:
+    build: .
+    container_name: strfry-relay
+    restart: unless-stopped
+    volumes:
+      - ./strfry-db:/app/strfry-db
+      - ./strfry-config/strfry.conf:/etc/strfry.conf
+    ports:
+      - "7777:7777"
+    command: relay --config /etc/strfry.conf
