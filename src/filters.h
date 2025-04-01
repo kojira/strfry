@@ -110,7 +110,8 @@ struct NostrFilter {
     std::optional<FilterSetBytes> ids;
     std::optional<FilterSetBytes> authors;
     std::optional<FilterSetUint> kinds;
-    flat_hash_map<char, FilterSetBytes> tags;
+    flat_hash_map<char, FilterSetBytes> tags;       // Single-character tags (legacy)
+    flat_hash_map<std::string, FilterSetBytes> tagsByName; // NIP-12 arbitrary tag names
 
     uint64_t since = 0;
     uint64_t until = MAX_U64;
@@ -141,6 +142,7 @@ struct NostrFilter {
             } else if (k.starts_with('#')) {
                 numMajorFields++;
                 if (k.size() == 2) {
+                    // Legacy single-character tag
                     char tag = k[1];
 
                     if (tag == 'p' || tag == 'e') {
@@ -148,8 +150,17 @@ struct NostrFilter {
                     } else {
                         tags.emplace(tag, FilterSetBytes(v, false, 0, MAX_INDEXED_TAG_VAL_SIZE));
                     }
+                } else if (k.size() > 2) {
+                    // NIP-12 arbitrary tag name
+                    std::string tagName = k.substr(1);
+                    
+                    if (tagName == "p" || tagName == "e") {
+                        tagsByName.emplace(tagName, FilterSetBytes(v, true, 32, 32));
+                    } else {
+                        tagsByName.emplace(tagName, FilterSetBytes(v, false, 0, MAX_INDEXED_TAG_VAL_SIZE));
+                    }
                 } else {
-                    throw herr("unindexed tag filter");
+                    throw herr("invalid tag filter");
                 }
             } else if (k == "since") {
                 since = v.get_unsigned();
@@ -162,7 +173,7 @@ struct NostrFilter {
             }
         }
 
-        if (tags.size() > 3) throw herr("too many tags in filter"); // O(N^2) in matching, just prohibit it
+        if (tags.size() + tagsByName.size() > 3) throw herr("too many tags in filter"); // O(N^2) in matching, just prohibit it
 
         if (limit > maxFilterLimit) limit = maxFilterLimit;
 
@@ -184,6 +195,7 @@ struct NostrFilter {
         if (authors && !authors->doesMatch(ev.pubkey())) return false;
         if (kinds && !kinds->doesMatch(ev.kind())) return false;
 
+        // Check single-character tags (legacy)
         for (const auto &[tag, filt] : tags) {
             bool foundMatch = false;
 
@@ -198,11 +210,26 @@ struct NostrFilter {
             if (!foundMatch) return false;
         }
 
+        // Check arbitrary tag names (NIP-12)
+        for (const auto &[tagName, filt] : tagsByName) {
+            bool foundMatch = false;
+            
+            for (size_t i = 0; i < filt.size(); i++) {
+                std::string_view tagVal = filt.at(i);
+                if (ev.hasTagWithValue(tagName, tagVal)) {
+                    foundMatch = true;
+                    break;
+                }
+            }
+            
+            if (!foundMatch) return false;
+        }
+
         return true;
     }
 
     bool isFullDbQuery() {
-        return !ids && !authors && !kinds && tags.size() == 0;
+        return !ids && !authors && !kinds && tags.size() == 0 && tagsByName.size() == 0;
     }
 };
 

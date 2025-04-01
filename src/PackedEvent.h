@@ -49,7 +49,7 @@ struct PackedEventView {
         return lmdb::from_sv<uint64_t>(buf.substr(80, 8));
     }
 
-    void foreachTag(const std::function<bool(char, std::string_view)> &cb) {
+    void foreachTag(const std::function<bool(char, std::string_view)> &cb) const {
         std::string_view b = buf.substr(88);
 
         while (b.size()) {
@@ -59,6 +59,26 @@ struct PackedEventView {
             if (!ret) break;
             b = b.substr(2 + tagLen);
         }
+    }
+    
+    // NIP-12: Check if an event has a tag with a specific name and value
+    bool hasTagWithValue(const std::string &tagName, std::string_view tagValue) const {
+        if (tagName.empty()) return false;
+        
+        char firstChar = tagName[0];
+        bool found = false;
+        
+        foreachTag([&](char tagChar, std::string_view val) {
+            // For NIP-12, we can only match on the first character of the tag
+            // since that's all we have in the packed event format
+            if (tagChar == firstChar && tagValue == val) {
+                found = true;
+                return false;
+            }
+            return true;
+        });
+        
+        return found;
     }
 };
 
