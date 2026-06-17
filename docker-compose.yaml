@@ -1,0 +1,13 @@
+services:
+  strfry-nostr-relay-temp:
+    build: .
+    volumes:
+      - ./strfry.conf:/etc/strfry.conf
+      - ./strfry-db:/app/strfry-db
+    ports:
+      - "7777:7777"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200m"
+        max-file: "50"

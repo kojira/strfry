@@ -110,3 +110,56 @@ config:
   - name: relay__negentropy__maxSyncEvents
     desc: "Maximum records that sync will process before returning an error"
     default: 1000000
+
+  - name: relay__rateLimit__enabled
+    desc: "Enable per-pubkey posting rate limiting"
+    default: false
+  - name: relay__rateLimit__windowSeconds
+    desc: "Time window (seconds) over which posts per pubkey are counted"
+    default: 60
+  - name: relay__rateLimit__maxEvents
+    desc: "Maximum number of events a single pubkey may post within the window"
+    default: 10
+  - name: relay__rateLimit__mode
+    desc: "Action when limit exceeded: \"reject\" (OK false) or \"shadow\" (OK true but not stored)"
+    default: "reject"
+  - name: relay__rateLimit__banOnExceed
+    desc: "When a pubkey exceeds the rate limit, permanently ban it (reject ALL its events) until manually unbanned"
+    default: false
+  - name: relay__rateLimit__banListFile
+    desc: "If non-empty, path to a file of banned pubkeys (64-char hex, one per line). Loaded at startup; auto-bans are appended here. Remove a line and restart to unban"
+    default: ""
+  - name: relay__rateLimit__kinds
+    desc: "JSON array of event kinds to rate-limit, or empty string for all kinds. Example: \"[1,1111]\""
+    default: ""
+  - name: relay__rateLimit__excludeKinds
+    desc: "JSON array of event kinds to EXEMPT from rate-limiting (takes precedence over kinds). Example: \"[7]\" to exempt reactions"
+    default: ""
+  - name: relay__rateLimit__exemptEphemeral
+    desc: "Exempt ephemeral kinds (20000-29999) from rate-limiting. They are never stored, so they can't be used for storage abuse (e.g. WebRTC signaling)"
+    default: true
+  - name: relay__rateLimit__exemptReplaceable
+    desc: "Exempt replaceable kinds (0, 3, 41, 10000-19999) from rate-limiting. Only the latest per pubkey+kind is stored, so they don't accumulate"
+    default: true
+  - name: relay__rateLimit__exemptAddressable
+    desc: "Exempt addressable/parameterized-replaceable kinds (30000-39999) from rate-limiting. NOTE: these CAN accumulate via distinct d-tags, so leaving this false closes a storage-abuse vector"
+    default: false
+
+  - name: relay__ipRateLimit__enabled
+    desc: "Enable per-IP posting rate limiting (requires real client IP; set relay.realIpHeader if behind a proxy). IPv6 is grouped by /64"
+    default: false
+  - name: relay__ipRateLimit__windowSeconds
+    desc: "Time window (seconds) over which posts per IP are counted"
+    default: 60
+  - name: relay__ipRateLimit__maxEvents
+    desc: "Maximum number of events a single IP (or IPv6 /64) may post within the window"
+    default: 30
+  - name: relay__ipRateLimit__mode
+    desc: "Action when IP limit exceeded: \"reject\" (OK false) or \"shadow\" (OK true but not stored)"
+    default: "reject"
+  - name: relay__ipRateLimit__banOnExceed
+    desc: "When an IP exceeds the rate limit, permanently ban it (reject ALL its events) until unbanned"
+    default: false
+  - name: relay__ipRateLimit__banListFile
+    desc: "If non-empty, path to a file of banned IPs (one per line; IPv6 /64 written as prefix/64). Loaded at startup; auto-bans appended. Remove a line and restart to unban"
+    default: ""
