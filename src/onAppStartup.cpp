@@ -47,7 +47,9 @@ static void setRLimits() {
 
     if (getrlimit(RLIMIT_NOFILE, &curr)) throw herr("couldn't call getrlimit: ", strerror(errno));
 
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) || defined(__APPLE__)
+    // FreeBSD/macOS: the requested limit may exceed the OS hard max (on macOS, kern.maxfilesperproc).
+    // Clamp instead of aborting so a Linux-tuned nofiles value doesn't fail startup.
     LI << "getrlimit NOFILES limit current " <<  curr.rlim_cur << " with max of " <<  curr.rlim_max;
     if (cfg().relay__nofiles > curr.rlim_max) {
         LI << "Unable to set NOFILES limit to " << cfg().relay__nofiles << ", exceeds max of " << curr.rlim_max;

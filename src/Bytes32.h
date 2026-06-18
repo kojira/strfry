@@ -33,7 +33,7 @@ namespace std {
     template<> struct hash<Bytes32> {
         std::size_t operator()(Bytes32 const &b) const {
             static_assert(sizeof(b.buf) == 32);
-            uint64_t *p = (size_t*)&b.buf;
+            uint64_t *p = (uint64_t*)&b.buf;
             return size_t(p[0] ^ p[1] ^ p[2] ^ p[3]);
         }
     };
