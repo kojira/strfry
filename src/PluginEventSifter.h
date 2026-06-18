@@ -11,6 +11,12 @@
 #include <sys/stat.h>
 #include <signal.h>
 
+#if defined(__APPLE__)
+#include <crt_externs.h>
+#define environ (*_NSGetEnviron())
+#define st_mtim st_mtimespec
+#endif
+
 #include <memory>
 
 #include "golpe.h"
