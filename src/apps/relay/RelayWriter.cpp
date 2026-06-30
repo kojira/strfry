@@ -1,6 +1,7 @@
 #include <deque>
 #include <fstream>
 #include <functional>
+#include <sys/stat.h>
 
 #include "RelayServer.h"
 
@@ -19,8 +20,16 @@ void RelayServer::runWriter(ThreadPool<MsgWriter>::Thread &thr) {
     // startup and (when banOnExceed is set) appended to when a pubkey exceeds the rate limit.
     flat_hash_set<std::string> bannedPubkeys;
 
-    if (cfg().relay__rateLimit__banListFile.size()) {
-        std::ifstream f(cfg().relay__rateLimit__banListFile);
+    // Reloadable: clears and re-reads the pubkey banlist from disk (used at startup and for
+    // hot-reload when the file changes, so unbans take effect without a relay restart).
+    auto loadPubkeyBanlist = [&]() -> bool {
+        const auto &banFile = cfg().relay__rateLimit__banListFile;
+        if (!banFile.size()) { bannedPubkeys.clear(); return true; }
+        std::ifstream f(banFile);
+        if (!f) { LW << "Rate limiter: could not open banListFile, keeping current bans: " << banFile; return false; }
+        // Build into a temp set and swap only on success, so a transient read failure never
+        // silently clears the banlist (which would let banned pubkeys through).
+        flat_hash_set<std::string> next;
         std::string line;
         while (std::getline(f, line)) {
             auto start = line.find_first_not_of(" \t\r\n");
@@ -33,13 +42,16 @@ void RelayServer::runWriter(ThreadPool<MsgWriter>::Thread &thr) {
                 continue;
             }
             try {
-                bannedPubkeys.insert(from_hex(line));
+                next.insert(from_hex(line));
             } catch (std::exception &e) {
                 LW << "Skipping invalid banlist hex: " << line;
             }
         }
-        LI << "Rate limiter: loaded " << bannedPubkeys.size() << " banned pubkeys from " << cfg().relay__rateLimit__banListFile;
-    }
+        bannedPubkeys = std::move(next);
+        LI << "Rate limiter: loaded " << bannedPubkeys.size() << " banned pubkeys from " << banFile;
+        return true;
+    };
+    loadPubkeyBanlist();
 
     // Per-IP posting rate limiter. IPv4 keyed by the full 4-byte address; IPv6 keyed by the /64
     // prefix (first 8 bytes) so an attacker can't trivially rotate within their allocation.
@@ -58,8 +70,12 @@ void RelayServer::runWriter(ThreadPool<MsgWriter>::Thread &thr) {
         return std::string();
     };
 
-    if (cfg().relay__ipRateLimit__banListFile.size()) {
-        std::ifstream f(cfg().relay__ipRateLimit__banListFile);
+    auto loadIpBanlist = [&]() -> bool {
+        const auto &banFile = cfg().relay__ipRateLimit__banListFile;
+        if (!banFile.size()) { bannedIps.clear(); return true; }
+        std::ifstream f(banFile);
+        if (!f) { LW << "Rate limiter: could not open IP banListFile, keeping current bans: " << banFile; return false; }
+        flat_hash_set<std::string> next;
         std::string line;
         while (std::getline(f, line)) {
             auto start = line.find_first_not_of(" \t\r\n");
@@ -70,10 +86,23 @@ void RelayServer::runWriter(ThreadPool<MsgWriter>::Thread &thr) {
             if (line.size() > 4 && line.compare(line.size() - 3, 3, "/64") == 0) line = line.substr(0, line.size() - 3);
             std::string bin = parseIP(line);
             if (bin.empty()) { LW << "Skipping invalid IP banlist entry: " << line; continue; }
-            bannedIps.insert(ipKey(bin));
+            next.insert(ipKey(bin));
         }
-        LI << "Rate limiter: loaded " << bannedIps.size() << " banned IPs from " << cfg().relay__ipRateLimit__banListFile;
-    }
+        bannedIps = std::move(next);
+        LI << "Rate limiter: loaded " << bannedIps.size() << " banned IPs from " << banFile;
+        return true;
+    };
+    loadIpBanlist();
+
+    // Hot-reload: poll the banlist files' mtimes each loop iteration and reload on change, so
+    // editing a banlist file (ban or unban) takes effect within a batch without a restart.
+    auto fileMtime = [](const std::string &path) -> uint64_t {
+        struct stat st;
+        if (path.size() && ::stat(path.c_str(), &st) == 0) return (uint64_t)st.st_mtime;
+        return 0;
+    };
+    uint64_t pubkeyBanMtime = fileMtime(cfg().relay__rateLimit__banListFile);
+    uint64_t ipBanMtime = fileMtime(cfg().relay__ipRateLimit__banListFile);
 
     // Which event kinds the rate limiter applies to. includeKinds empty => all kinds. excludeKinds
     // are always exempt and take precedence. These only gate rate-limit counting / auto-ban; an
@@ -165,6 +194,22 @@ void RelayServer::runWriter(ThreadPool<MsgWriter>::Thread &thr) {
 
     while(1) {
         auto newMsgs = thr.inbox.pop_all();
+
+        // Hot-reload banlists if their files changed on disk (no restart needed)
+        {
+            // Only advance the stored mtime when the reload actually succeeds; otherwise we
+            // retry next iteration instead of giving up (and never silently drop the banlist).
+            uint64_t m = fileMtime(cfg().relay__rateLimit__banListFile);
+            if (m != pubkeyBanMtime && loadPubkeyBanlist()) {
+                pubkeyBanMtime = m;
+                LI << "Rate limiter: reloaded pubkey banlist after file change";
+            }
+            uint64_t mi = fileMtime(cfg().relay__ipRateLimit__banListFile);
+            if (mi != ipBanMtime && loadIpBanlist()) {
+                ipBanMtime = mi;
+                LI << "Rate limiter: reloaded IP banlist after file change";
+            }
+        }
 
         // Filter out messages from already closed sockets
 
