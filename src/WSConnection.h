@@ -53,14 +53,39 @@ class WSConnection : NonCopyable {
         if (hubTrigger) hubTrigger->send();
     }
 
+    // Perform the actual connection attempt. Must run on the websocket (hub) thread.
+    void connectNow() {
+        if (shutdown) return;
+        LI << "Attempting to connect to " << url;
+        hub.connect(url, nullptr, {}, 5000, hubGroup);
+    }
+
+    // Schedule a reconnect after `delay` ms WITHOUT blocking the event loop.
+    // A previous implementation slept the hub thread with std::this_thread::sleep_for,
+    // which stalled the loop's cached clock by `delay` ms. Since the reconnect delay
+    // equalled hub.connect's connection-timeout (both 5000ms), the timeout timer's
+    // deadline was computed against the stale clock and fired immediately, tearing down
+    // every reconnect before its WS handshake completed (first connect worked because it
+    // had no delay). Using a non-blocking timer keeps the loop clock accurate.
+    void scheduleReconnect(uint64_t delay) {
+        if (shutdown) return;
+        uS::Timer *timer = new uS::Timer(hub.getLoop());
+        timer->setData(this);
+        timer->start([](uS::Timer *t){
+            WSConnection *self = (WSConnection *) t->getData();
+            t->stop();
+            t->close();
+            self->connectNow();
+        }, delay, 0);
+    }
+
     void run() {
         hubGroup = hub.createGroup<uWS::CLIENT>(uWS::PERMESSAGE_DEFLATE | uWS::SLIDING_DEFLATE_WINDOW);
 
         auto doConnect = [&](uint64_t delay = 0){
-            if (delay) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
             if (shutdown) return;
-            LI << "Attempting to connect to " << url;
-            hub.connect(url, nullptr, {}, 5000, hubGroup);
+            if (delay) scheduleReconnect(delay);
+            else connectNow();
         };
 
 
