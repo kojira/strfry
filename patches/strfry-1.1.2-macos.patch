@@ -1,0 +1,106 @@
+diff --git a/Makefile b/Makefile
+index 957d200..e283516 100644
+--- a/Makefile
++++ b/Makefile
+@@ -5,6 +5,11 @@ OPT  ?= -O3 -g
+ include golpe/rules.mk
+ 
+ LDLIBS += -lsecp256k1 -lzstd
++
++# macOS: uWebSockets (v0.14, libuv backend) needs libuv linked explicitly
++ifeq ($(shell uname),Darwin)
++LDLIBS += -luv
++endif
+ INCS += -Iexternal/negentropy/cpp
+ 
+ build/StrfryTemplates.h: $(shell find src/tmpls/ -type f -name '*.tmpl')
+diff --git a/golpe b/golpe
+--- a/golpe
++++ b/golpe
+@@ -1 +1 @@
+-Subproject commit 72477956b080bbb957118f8843ee99d7153eff3a
++Subproject commit 72477956b080bbb957118f8843ee99d7153eff3a-dirty
+diff --git a/src/Bytes32.h b/src/Bytes32.h
+index 2d9f4c0..c472341 100644
+--- a/src/Bytes32.h
++++ b/src/Bytes32.h
+@@ -47,7 +47,7 @@ namespace std {
+     template<> struct hash<Bytes32> {
+         std::size_t operator()(Bytes32 const &b) const {
+             static_assert(sizeof(b.buf) == 32);
+-            uint64_t *p = (size_t*)&b.buf;
++            const uint64_t *p = (const uint64_t*)&b.buf;
+             return size_t(p[0] ^ p[1] ^ p[2] ^ p[3]);
+         }
+     };
+diff --git a/src/PluginEventSifter.h b/src/PluginEventSifter.h
+index 59d84ac..d288f38 100644
+--- a/src/PluginEventSifter.h
++++ b/src/PluginEventSifter.h
+@@ -10,6 +10,12 @@
+ #include <sys/stat.h>
+ #include <signal.h>
+ 
++#if defined(__APPLE__)
++#include <crt_externs.h>
++#define environ (*_NSGetEnviron())
++#define st_mtim st_mtimespec
++#endif
++
+ #include <memory>
+ 
+ #include "hoytech/stream.h"
+diff --git a/src/apps/mesh/cmd_sync.cpp b/src/apps/mesh/cmd_sync.cpp
+index 4afe4ab..28cc558 100644
+--- a/src/apps/mesh/cmd_sync.cpp
++++ b/src/apps/mesh/cmd_sync.cpp
+@@ -1,3 +1,4 @@
++#include <type_traits>
+ #include <docopt.h>
+ #include <tao/json.hpp>
+ #include <negentropy.h>
+@@ -130,10 +131,10 @@ void cmd_sync(const std::vector<std::string> &subArgs) {
+             const auto &f = filterCompiled.filters.at(0);
+             negentropy::storage::SubRange subStorage(storageBtree, negentropy::Bound(f.since), negentropy::Bound(f.until == MAX_U64 ? MAX_U64 : f.until + 1));
+ 
+-            Negentropy ne(subStorage, frameSizeLimit);
++            Negentropy<std::remove_reference_t<decltype(subStorage)>> ne(subStorage, frameSizeLimit);
+             neMsg = ne.initiate();
+         } else {
+-            Negentropy ne(storageVector, frameSizeLimit);
++            Negentropy<std::remove_reference_t<decltype(storageVector)>> ne(storageVector, frameSizeLimit);
+             neMsg = ne.initiate();
+         }
+ 
+@@ -186,11 +187,11 @@ void cmd_sync(const std::vector<std::string> &subArgs) {
+                         const auto &f = filterCompiled.filters.at(0);
+                         negentropy::storage::SubRange subStorage(storageBtree, negentropy::Bound(f.since), negentropy::Bound(f.until == MAX_U64 ? MAX_U64 : f.until + 1));
+ 
+-                        Negentropy ne(subStorage, frameSizeLimit);
++                        Negentropy<std::remove_reference_t<decltype(subStorage)>> ne(subStorage, frameSizeLimit);
+                         ne.setInitiator();
+                         neMsg = ne.reconcile(inputMsg, currHave, currNeed);
+                     } else {
+-                        Negentropy ne(storageVector, frameSizeLimit);
++                        Negentropy<std::remove_reference_t<decltype(storageVector)>> ne(storageVector, frameSizeLimit);
+                         ne.setInitiator();
+                         neMsg = ne.reconcile(inputMsg, currHave, currNeed);
+                     }
+diff --git a/src/apps/relay/RelayNegentropy.cpp b/src/apps/relay/RelayNegentropy.cpp
+index c3a0b6f..8e2d7c7 100644
+--- a/src/apps/relay/RelayNegentropy.cpp
++++ b/src/apps/relay/RelayNegentropy.cpp
+@@ -1,3 +1,4 @@
++#include <type_traits>
+ #include <negentropy.h>
+ #include <negentropy/storage/Vector.h>
+ #include <negentropy/storage/BTreeLMDB.h>
+@@ -96,7 +97,7 @@ void RelayServer::runNegentropy(ThreadPool<MsgNegentropy>::Thread &thr) {
+         std::string resp;
+ 
+         try {
+-            Negentropy ne(storage, 500'000);
++            Negentropy<std::remove_reference_t<decltype(storage)>> ne(storage, 500'000);
+             resp = ne.reconcile(msg);
+         } catch (std::exception &e) {
+             LI << "[" << connId << "] Error parsing negentropy message: " << e.what();
