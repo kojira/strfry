@@ -1,3 +1,9 @@
+# NOTE (2026-09-04): this patch targets the 1.1.2 TAG. Upstream master has since
+# absorbed 4 of these 5 hunks (Bytes32.h via #190, PluginEventSifter.h + Makefile
+# via #210, kqueue monitor via hoytech-cpp). On master only the Negentropy CTAD
+# hunk is still needed, and only for Apple clang 16 — see branch
+# fix/negentropy-ctad-clang16 (1 commit on top of upstream master). Prefer
+# building from master; keep this file for reproducing the 1.1.2-tag build.
 diff --git a/Makefile b/Makefile
 index 957d200..e283516 100644
 --- a/Makefile
