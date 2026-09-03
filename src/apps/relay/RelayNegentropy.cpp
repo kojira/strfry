@@ -1,3 +1,4 @@
+#include <type_traits>
 #include <negentropy.h>
 #include <negentropy/storage/Vector.h>
 #include <negentropy/storage/BTreeLMDB.h>
@@ -96,7 +97,7 @@ void RelayServer::runNegentropy(ThreadPool<MsgNegentropy>::Thread &thr) {
         std::string resp;
 
         try {
-            Negentropy ne(storage, 500'000);
+            Negentropy<std::remove_reference_t<decltype(storage)>> ne(storage, 500'000);
             resp = ne.reconcile(msg);
         } catch (std::exception &e) {
             LI << "[" << connId << "] Error parsing negentropy message: " << e.what();

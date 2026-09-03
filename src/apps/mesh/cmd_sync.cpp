@@ -1,3 +1,4 @@
+#include <type_traits>
 #include <docopt.h>
 #include <tao/json.hpp>
 #include <negentropy.h>
@@ -146,10 +147,10 @@ void cmd_sync(const std::vector<std::string> &subArgs) {
             const auto &f = filterCompiled.filters.at(0);
             negentropy::storage::SubRange subStorage(storageBtree, negentropy::Bound(f.since), negentropy::Bound(f.until == MAX_U64 ? MAX_U64 : f.until + 1));
 
-            Negentropy ne(subStorage, frameSizeLimit);
+            Negentropy<std::remove_reference_t<decltype(subStorage)>> ne(subStorage, frameSizeLimit);
             neMsg = ne.initiate();
         } else {
-            Negentropy ne(storageVector, frameSizeLimit);
+            Negentropy<std::remove_reference_t<decltype(storageVector)>> ne(storageVector, frameSizeLimit);
             neMsg = ne.initiate();
         }
 
@@ -212,11 +213,11 @@ void cmd_sync(const std::vector<std::string> &subArgs) {
                         const auto &f = filterCompiled.filters.at(0);
                         negentropy::storage::SubRange subStorage(storageBtree, negentropy::Bound(f.since), negentropy::Bound(f.until == MAX_U64 ? MAX_U64 : f.until + 1));
 
-                        Negentropy ne(subStorage, frameSizeLimit);
+                        Negentropy<std::remove_reference_t<decltype(subStorage)>> ne(subStorage, frameSizeLimit);
                         ne.setInitiator();
                         neMsg = ne.reconcile(inputMsg, currHave, currNeed);
                     } else {
-                        Negentropy ne(storageVector, frameSizeLimit);
+                        Negentropy<std::remove_reference_t<decltype(storageVector)>> ne(storageVector, frameSizeLimit);
                         ne.setInitiator();
                         neMsg = ne.reconcile(inputMsg, currHave, currNeed);
                     }
