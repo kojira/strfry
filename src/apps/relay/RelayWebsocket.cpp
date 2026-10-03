@@ -1,3 +1,7 @@
+#include <fstream>
+#include <unordered_map>
+#include <sys/stat.h>
+
 #include "RelayServer.h"
 
 #include "StrfryTemplates.h"
@@ -5,10 +9,11 @@
 
 
 
-static std::string preGenerateHttpResponse(const std::string &contentType, const std::string &content) {
+static std::string preGenerateHttpResponse(const std::string &contentType, const std::string &content, const std::string &extraHeaders = "") {
     std::string output = "HTTP/1.1 200 OK\r\n";
     output += std::string("Content-Type: ") + contentType + "\r\n";
     output += "Access-Control-Allow-Origin: *\r\n";
+    output += extraHeaders;
     output += "Connection: keep-alive\r\n";
     output += "Server: strfry\r\n";
     output += std::string("Content-Length: ") + std::to_string(content.size()) + "\r\n";
@@ -18,6 +23,26 @@ static std::string preGenerateHttpResponse(const std::string &contentType, const
 };
 
 
+
+// Change detector for re-reading files: mtime (ns where available) mixed with size, so same-second edits are seen.
+static int64_t fileVersion(const struct stat &st) {
+#ifdef __APPLE__
+    int64_t ns = (int64_t)st.st_mtimespec.tv_sec * 1'000'000'000 + st.st_mtimespec.tv_nsec;
+#else
+    int64_t ns = (int64_t)st.st_mtim.tv_sec * 1'000'000'000 + st.st_mtim.tv_nsec;
+#endif
+    return ns ^ ((int64_t)st.st_size << 1);
+}
+
+// Read at most maxBytes (the size seen by stat), so a file growing meanwhile can't exceed the limit.
+static bool readFileUpTo(const std::string &path, size_t maxBytes, std::string &out) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    out.resize(maxBytes);
+    f.read(out.data(), (std::streamsize)maxBytes);
+    out.resize((size_t)f.gcount());
+    return !f.bad();
+}
 
 void RelayServer::runWebsocket(ThreadPool<MsgWebsocket>::Thread &thr) {
     struct Connection {
@@ -103,6 +128,72 @@ void RelayServer::runWebsocket(ThreadPool<MsgWebsocket>::Thread &thr) {
         return std::string_view(rendered); // memory only valid until next call
     };
 
+    auto getCustomLandingPageHttpResponse = [path = std::string(""), mtime = (int64_t)-1, lastCheck = (uint64_t)0, rendered = std::string("")]() mutable -> std::string_view {
+        const std::string &p = cfg().relay__landingPageFile;
+        if (p.empty()) { rendered.clear(); return std::string_view(rendered); }
+
+        uint64_t now = hoytech::curr_time_us();
+        if (p == path && now - lastCheck < 5'000'000) return std::string_view(rendered);
+        lastCheck = now;
+
+        struct stat st;
+        if (::stat(p.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size > 8 * 1024 * 1024) {
+            if (rendered.size() || p != path) LW << "landingPageFile unavailable (missing, not a regular file or > 8 MiB), using built-in page: " << p;
+            rendered.clear(); path = p; mtime = -1;
+            return std::string_view(rendered);
+        }
+
+        int64_t m = fileVersion(st);
+        if (p == path && m == mtime) return std::string_view(rendered);
+
+        std::string content;
+        if (!readFileUpTo(p, (size_t)st.st_size, content)) { rendered.clear(); path = p; mtime = -1; return std::string_view(rendered); }
+
+        rendered = preGenerateHttpResponse("text/html; charset=utf-8", content, "Cache-Control: max-age=300\r\n");
+        path = p; mtime = m;
+        LI << "Loaded landingPageFile " << p << " (" << content.size() << " bytes)";
+        return std::string_view(rendered);
+    };
+
+    // Static files next to landingPageFile: GET /assets/<name> -> <dir of landingPageFile>/assets/<name>
+    // (only [A-Za-z0-9._-] names, whitelisted extensions; cached per file and re-read on mtime change)
+    auto getLandingAssetHttpResponse = [cache = std::unordered_map<std::string, std::pair<int64_t, std::string>>()](const std::string &url) mutable -> std::string_view {
+        static const std::string empty;
+        const std::string &lp = cfg().relay__landingPageFile;
+        if (lp.empty() || url.rfind("/assets/", 0) != 0) return std::string_view(empty);
+        std::string name = url.substr(8);
+        auto q = name.find_first_of("?#");
+        if (q != std::string::npos) name.resize(q);
+        if (name.empty() || name.size() > 128 || name[0] == '.') return std::string_view(empty);
+        for (char ch : name) if (!(isalnum((unsigned char)ch) || ch == '.' || ch == '_' || ch == '-')) return std::string_view(empty);
+
+        static const std::vector<std::pair<std::string, std::string>> types = {
+            { ".png", "image/png" }, { ".jpg", "image/jpeg" }, { ".jpeg", "image/jpeg" }, { ".webp", "image/webp" },
+            { ".svg", "image/svg+xml" }, { ".ico", "image/x-icon" }, { ".css", "text/css; charset=utf-8" },
+            { ".js", "text/javascript; charset=utf-8" }, { ".json", "application/json" }, { ".txt", "text/plain; charset=utf-8" },
+        };
+        std::string ctype;
+        for (auto &t : types) {
+            if (name.size() > t.first.size() && name.compare(name.size() - t.first.size(), t.first.size(), t.first) == 0) { ctype = t.second; break; }
+        }
+        if (ctype.empty()) return std::string_view(empty);
+
+        auto slash = lp.find_last_of('/');
+        std::string path = (slash == std::string::npos ? std::string(".") : lp.substr(0, slash)) + "/assets/" + name;
+
+        struct stat st;   // lstat: symlinks are not followed (only regular files placed in assets/ are served)
+        if (::lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size > 8 * 1024 * 1024) { cache.erase(path); return std::string_view(empty); }
+        auto &ent = cache[path];
+        int64_t v = fileVersion(st);
+        if (ent.first == v && ent.second.size()) return std::string_view(ent.second);
+
+        std::string content;
+        if (!readFileUpTo(path, (size_t)st.st_size, content)) { cache.erase(path); return std::string_view(empty); }
+        ent.first = v;
+        ent.second = preGenerateHttpResponse(ctype, content, "Cache-Control: public, max-age=600\r\nX-Content-Type-Options: nosniff\r\n");
+        return std::string_view(ent.second);
+    };
+
     auto getNodeInfoHttpResponse = [ver = uint64_t(0), rendered = std::string("")](std::string host) mutable {
         if (ver != cfg().version()) {
             tao::json::value nodeinfo = tao::json::value({
@@ -181,12 +272,25 @@ void RelayServer::runWebsocket(ThreadPool<MsgWebsocket>::Thread &thr) {
         } else if (url == "/nodeinfo/2.1") {
             auto nodeInfo = getNodeInfo21HttpResponse();
             res->write(nodeInfo.data(), nodeInfo.size());
+        } else if (!cfg().relay__landingPageFile.empty() && url.rfind("/assets/", 0) == 0) {
+            auto asset = getLandingAssetHttpResponse(url);
+            if (asset.size()) {
+                res->write(asset.data(), asset.size());
+            } else {
+                static const std::string notFound = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nServer: strfry\r\nContent-Length: 9\r\n\r\nnot found";
+                res->write(notFound.data(), notFound.size());
+            }
         } else if (req.getHeader("accept").toStringView() == "application/nostr+json") {
             auto info = getServerInfoHttpResponse();
             res->write(info.data(), info.size());
         } else {
-            auto landing = getLandingPageHttpResponse();
-            res->write(landing.data(), landing.size());
+            auto custom = getCustomLandingPageHttpResponse();
+            if (custom.size()) {
+                res->write(custom.data(), custom.size());
+            } else {
+                auto landing = getLandingPageHttpResponse();
+                res->write(landing.data(), landing.size());
+            }
         }
     });
 
