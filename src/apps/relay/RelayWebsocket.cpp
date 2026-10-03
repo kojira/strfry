@@ -1,4 +1,5 @@
 #include <fstream>
+#include <unordered_map>
 #include <sys/stat.h>
 
 #include "RelayServer.h"
@@ -190,6 +191,45 @@ void RelayServer::runWebsocket(ThreadPool<MsgWebsocket>::Thread &thr) {
         return std::string_view(rendered);
     };
 
+    // Static files next to landingPageFile: GET /assets/<name> -> <dir of landingPageFile>/assets/<name>
+    // (only [A-Za-z0-9._-] names, whitelisted extensions; cached per file and re-read on mtime change)
+    auto getLandingAssetHttpResponse = [cache = std::unordered_map<std::string, std::pair<int64_t, std::string>>()](const std::string &url) mutable -> std::string_view {
+        static const std::string empty;
+        const std::string &lp = cfg().relay__landingPageFile;
+        if (lp.empty() || url.rfind("/assets/", 0) != 0) return std::string_view(empty);
+        std::string name = url.substr(8);
+        auto q = name.find_first_of("?#");
+        if (q != std::string::npos) name.resize(q);
+        if (name.empty() || name.size() > 128 || name[0] == '.') return std::string_view(empty);
+        for (char ch : name) if (!(isalnum((unsigned char)ch) || ch == '.' || ch == '_' || ch == '-')) return std::string_view(empty);
+
+        static const std::vector<std::pair<std::string, std::string>> types = {
+            { ".png", "image/png" }, { ".jpg", "image/jpeg" }, { ".jpeg", "image/jpeg" }, { ".webp", "image/webp" },
+            { ".svg", "image/svg+xml" }, { ".ico", "image/x-icon" }, { ".css", "text/css; charset=utf-8" },
+            { ".js", "text/javascript; charset=utf-8" }, { ".json", "application/json" }, { ".txt", "text/plain; charset=utf-8" },
+        };
+        std::string ctype;
+        for (auto &t : types) {
+            if (name.size() > t.first.size() && name.compare(name.size() - t.first.size(), t.first.size(), t.first) == 0) { ctype = t.second; break; }
+        }
+        if (ctype.empty()) return std::string_view(empty);
+
+        auto slash = lp.find_last_of('/');
+        std::string path = (slash == std::string::npos ? std::string(".") : lp.substr(0, slash)) + "/assets/" + name;
+
+        struct stat st;
+        if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size > 8 * 1024 * 1024) { cache.erase(name); return std::string_view(empty); }
+        auto &ent = cache[name];
+        if (ent.first == (int64_t)st.st_mtime && ent.second.size()) return std::string_view(ent.second);
+
+        std::ifstream f(path, std::ios::binary);
+        std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        if (!f.good() && !f.eof()) { cache.erase(name); return std::string_view(empty); }
+        ent.first = (int64_t)st.st_mtime;
+        ent.second = preGenerateHttpResponse(ctype, content, "Cache-Control: public, max-age=600\r\n");
+        return std::string_view(ent.second);
+    };
+
     auto getNodeInfoHttpResponse = [ver = uint64_t(0), rendered = std::string("")](std::string host) mutable {
         if (ver != cfg().version()) {
             tao::json::value nodeinfo = tao::json::value({
@@ -276,6 +316,14 @@ void RelayServer::runWebsocket(ThreadPool<MsgWebsocket>::Thread &thr) {
             res->write(nodeInfo.data(), nodeInfo.size());
         } else if (url == "/favicon.ico") {
             res->write(faviconResponse.data(), faviconResponse.size());
+        } else if (url.rfind("/assets/", 0) == 0) {
+            auto asset = getLandingAssetHttpResponse(url);
+            if (asset.size()) {
+                res->write(asset.data(), asset.size());
+            } else {
+                static const std::string notFound = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nnot found";
+                res->write(notFound.data(), notFound.size());
+            }
         } else if (req.getHeader("accept").toStringView() == "application/nostr+json") {
             auto info = getServerInfoHttpResponse();
             res->write(info.data(), info.size());

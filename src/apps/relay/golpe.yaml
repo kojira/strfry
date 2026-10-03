@@ -56,7 +56,7 @@ config:
     desc: "NIP-11: Terms of service URL"
     default: ""
   - name: relay__landingPageFile
-    desc: "Path to an HTML file served instead of the built-in landing page for plain HTTP GETs (re-read when its mtime changes). Empty = built-in page."
+    desc: "Path to an HTML file served instead of the built-in landing page for plain HTTP GETs (re-read when its mtime changes). Empty = built-in page. Files in <its dir>/assets/ are served at /assets/<name> (png/jpg/webp/svg/ico/css/js/json/txt)."
     default: ""
   - name: relay__info__nips
     desc: "List of supported lists as JSON array, or empty string to use default. Example: \"[1,2]\""
