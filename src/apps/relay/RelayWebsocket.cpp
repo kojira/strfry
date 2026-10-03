@@ -1,3 +1,6 @@
+#include <fstream>
+#include <sys/stat.h>
+
 #include "RelayServer.h"
 
 #include "StrfryTemplates.h"
@@ -103,6 +106,34 @@ void RelayServer::runWebsocket(ThreadPool<MsgWebsocket>::Thread &thr) {
         return std::string_view(rendered); // memory only valid until next call
     };
 
+    auto getCustomLandingPageHttpResponse = [path = std::string(""), mtime = (int64_t)-1, lastCheck = (uint64_t)0, rendered = std::string("")]() mutable -> std::string_view {
+        const std::string &p = cfg().relay__landingPageFile;
+        if (p.empty()) { rendered.clear(); return std::string_view(rendered); }
+
+        uint64_t now = hoytech::curr_time_us();
+        if (p == path && now - lastCheck < 5'000'000) return std::string_view(rendered);
+        lastCheck = now;
+
+        struct stat st;
+        if (::stat(p.c_str(), &st) != 0) {
+            if (rendered.size()) LW << "landingPageFile unavailable, using built-in page: " << p;
+            rendered.clear(); path = p; mtime = -1;
+            return std::string_view(rendered);
+        }
+
+        int64_t m = (int64_t)st.st_mtime;
+        if (p == path && m == mtime) return std::string_view(rendered);
+
+        std::ifstream f(p, std::ios::binary);
+        std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        if (!f.good() && !f.eof()) { rendered.clear(); return std::string_view(rendered); }
+
+        rendered = preGenerateHttpResponse("text/html; charset=utf-8", content, "Cache-Control: max-age=300\r\n");
+        path = p; mtime = m;
+        LI << "Loaded landingPageFile " << p << " (" << content.size() << " bytes)";
+        return std::string_view(rendered);
+    };
+
     auto getNodeInfoHttpResponse = [ver = uint64_t(0), rendered = std::string("")](std::string host) mutable {
         if (ver != cfg().version()) {
             tao::json::value nodeinfo = tao::json::value({
@@ -185,8 +216,13 @@ void RelayServer::runWebsocket(ThreadPool<MsgWebsocket>::Thread &thr) {
             auto info = getServerInfoHttpResponse();
             res->write(info.data(), info.size());
         } else {
-            auto landing = getLandingPageHttpResponse();
-            res->write(landing.data(), landing.size());
+            auto custom = getCustomLandingPageHttpResponse();
+            if (custom.size()) {
+                res->write(custom.data(), custom.size());
+            } else {
+                auto landing = getLandingPageHttpResponse();
+                res->write(landing.data(), landing.size());
+            }
         }
     });
 
