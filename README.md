@@ -411,7 +411,7 @@ The index is designed to stay small and to work with languages that are not sepa
 * Text in Japanese, Chinese and Korean is indexed as overlapping 2-character tokens.
 * Only one entry is stored per (token, event). No word positions are stored.
 
-A query is split into terms by spaces, and an event matches if its text contains every term. Candidates come from the index and are always verified against the event text, so 2-character tokens don't cause false positives. Results are returned in reverse order of when they were stored by the relay (which is usually close to newest first), and can be combined with the other filter fields. NIP-50 extensions such as `language:en` are ignored.
+A query is split into terms by spaces, and an event matches if its text contains every term. Candidates come from the index and are always verified against the event text, so 2-character tokens don't cause false positives. Results are returned newest first (by `created_at`) and can be combined with the other filter fields. NIP-50 extensions such as `language:en` are ignored.
 
 `strfry search stats` shows the size of the index, and `strfry search tokens <text>` shows how a text would be indexed.
 
