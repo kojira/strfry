@@ -314,10 +314,27 @@ struct DBScan : NonCopyable {
             result.swap(tmp);
         }
 
+        // Cheap filter checks (kinds, authors, since/until, tags) before any event text is loaded, then order
+        // newest first by created_at (levIds follow insertion order, which differs for imported/synced events)
+        std::vector<std::pair<uint64_t, uint64_t>> ordered; // (created_at, levId)
+        ordered.reserve(result.size());
+
+        for (auto levId : result) {
+            auto view = env.lookup_Event(txn, levId);
+            if (!view) continue; // deleted
+            PackedEventView packed(view->buf);
+            if (!f.doesMatchExceptSearch(packed)) continue;
+            ordered.emplace_back(packed.created_at(), levId);
+        }
+
         approxWork += result.size();
 
-        // Newest first. levIds are assigned in insertion order, which approximates created_at order.
-        std::reverse(result.begin(), result.end());
+        std::sort(ordered.begin(), ordered.end(), [](const auto &a, const auto &b){
+            return a.first == b.first ? a.second > b.second : a.first > b.first;
+        });
+
+        result.clear();
+        for (auto &o : ordered) result.push_back(o.second);
 
         searchCandidates.swap(result);
     }
@@ -335,7 +352,6 @@ struct DBScan : NonCopyable {
             if (!view) continue; // deleted
 
             PackedEventView packed(view->buf);
-            if (!f.doesMatchExceptSearch(packed)) continue; // cheap checks, before loading the event text
 
             if (++searchVerified > cfg().search__maxCandidates) return true;
 
