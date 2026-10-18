@@ -403,7 +403,11 @@ strfry can optionally answer [NIP-50](https://github.com/nostr-protocol/nips/blo
 
     strfry search reindex
 
-`search.kinds` selects the event kinds to index (default `0, 1, 30023`). For kind 0, the `name`, `display_name`, `about` and `nip05` fields of the profile are indexed. For other kinds, the `content` and the `title`, `subject` and `summary` tags are indexed. URLs and `nostr:` URIs are not indexed.
+This drops the index and rebuilds it from every stored event. After adding kinds to `search.kinds` (and restarting), only the new kinds need to be indexed. This keeps the existing index and reads just those kinds:
+
+    strfry search reindex --kinds=40,41,42
+
+`search.kinds` selects the event kinds to index (default `0, 1, 30023`). For kind 0 (profile), 40 (channel creation) and 41 (channel metadata), the `name`, `display_name`, `about` and `nip05` fields of the JSON content are indexed. For other kinds, the `content` and the `title`, `subject` and `summary` tags are indexed. URLs and `nostr:` URIs are not indexed.
 
 The index is designed to stay small and to work with languages that are not separated by spaces:
 

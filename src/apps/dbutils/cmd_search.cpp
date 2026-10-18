@@ -10,11 +10,14 @@
 static const char USAGE[] =
 R"(
     Usage:
-      search reindex [--batch=<batch>]
+      search reindex [--batch=<batch>] [--kinds=<kinds>]
       search stats
       search tokens <text>
 
-    reindex: drops the search index and rebuilds it from all stored events
+    reindex: drops the search index and rebuilds it from all stored events.
+             With --kinds (comma-separated), the index is kept and only stored events
+             of those kinds are (re-)indexed, read through the kind index. Use this
+             after adding kinds to search.kinds.
     stats:   prints the size of the search index
     tokens:  prints the tokens that would be indexed for <text>
 )";
@@ -57,13 +60,71 @@ void cmd_search(const std::vector<std::string> &subArgs) {
         uint64_t batchSize = 10'000;
         if (args["--batch"]) batchSize = args["--batch"].asLong();
 
+        Decompressor decomp;
+
+        if (args["--kinds"]) {
+            flat_hash_set<uint64_t> kindSet;
+            parseCommaSeparatedKinds(args["--kinds"].asString(), kindSet);
+            std::vector<uint64_t> kinds(kindSet.begin(), kindSet.end());
+            std::sort(kinds.begin(), kinds.end());
+
+            for (auto kind : kinds) {
+                if (!searchIsIndexedKind(kind)) throw herr("kind ", kind, " is not in search.kinds");
+            }
+
+            uint64_t numIndexed = 0;
+            uint64_t startTime = hoytech::curr_time_us();
+
+            for (auto kind : kinds) {
+                uint64_t resumeTime = 0, resumeLevId = 0;
+
+                while (1) {
+                    auto txn = env.txn_rw();
+                    uint64_t inBatch = 0;
+                    bool done = true;
+
+                    env.generic_foreachFull(txn, env.dbi_Event__kind, makeKey_Uint64Uint64(kind, resumeTime), lmdb::to_sv<uint64_t>(resumeLevId), [&](auto k, auto v) {
+                        ParsedKey_Uint64Uint64 parsedKey(k);
+                        if (parsedKey.n1 != kind) return false;
+
+                        uint64_t levId = lmdb::from_sv<uint64_t>(v);
+
+                        if (inBatch >= batchSize) {
+                            resumeTime = parsedKey.n2;
+                            resumeLevId = levId;
+                            done = false;
+                            return false;
+                        }
+
+                        inBatch++;
+
+                        std::string_view eventPayload;
+                        if (!env.dbi_EventPayload.get(txn, lmdb::to_sv<uint64_t>(levId), eventPayload)) return true;
+
+                        searchIndexEvent(txn, levId, kind, getEventJson(txn, decomp, levId, eventPayload));
+                        numIndexed++;
+
+                        return true;
+                    });
+
+                    txn.commit();
+
+                    LI << "search reindex: kind " << kind << ", indexed " << numIndexed;
+
+                    if (done) break;
+                }
+            }
+
+            LI << "search reindex complete in " << ((hoytech::curr_time_us() - startTime) / 1'000'000) << "s";
+            return;
+        }
+
         {
             auto txn = env.txn_rw();
             env.dbi_SearchIndex.drop(txn, false);
             txn.commit();
         }
 
-        Decompressor decomp;
         uint64_t startLevId = 0, numEvents = 0, numIndexed = 0;
         uint64_t startTime = hoytech::curr_time_us();
 
