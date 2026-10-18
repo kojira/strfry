@@ -7,6 +7,8 @@
 #include "Bytes32.h"
 #include "Subscription.h"
 #include "filters.h"
+#include "events.h"
+#include "SearchIndex.h"
 
 
 
@@ -88,12 +90,21 @@ struct ActiveMonitors : NonCopyable {
     void process(lmdb::txn &txn, defaultDb::environment::View_Event &ev, const std::function<void(RecipientList &&, uint64_t)> &cb) {
         RecipientList recipients;
 
+        std::optional<std::string> normText;
+        auto getNormText = [&]() -> std::string_view {
+            if (!normText) {
+                thread_local Decompressor decomp;
+                normText = searchExtractText(getEventJson(txn, decomp, ev.primaryKeyId));
+            }
+            return *normText;
+        };
+
         auto processMonitorSet = [&](MonitorSet &ms){
             for (auto &[f, item] : ms) {
                 if (item.latestEventId >= ev.primaryKeyId || item.mon->sub.latestEventId >= ev.primaryKeyId) continue;
                 item.latestEventId = ev.primaryKeyId;
 
-                if (f->doesMatch(PackedEventView(ev.buf))) {
+                if (f->doesMatch(PackedEventView(ev.buf), getNormText)) {
                     recipients.emplace_back(item.mon->sub.connId, item.mon->sub.subId);
                     item.mon->sub.latestEventId = ev.primaryKeyId;
                     continue;

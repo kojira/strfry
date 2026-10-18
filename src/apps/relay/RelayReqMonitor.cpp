@@ -2,6 +2,7 @@
 
 #include "ActiveMonitors.h"
 #include "ReadRestrictor.h"
+#include "SearchIndex.h"
 
 
 
@@ -36,7 +37,12 @@ void RelayServer::runReqMonitor(ThreadPool<MsgReqMonitor>::Thread &thr) {
 
                 env.foreach_Event(txn, [&](auto &ev){
                     PackedEventView packed(ev.buf);
-                    if (msg->sub.filterGroup.doesMatch(packed)) {
+                    std::string normText;
+                    bool matched = msg->sub.filterGroup.doesMatch(packed, [&]() -> std::string_view {
+                        normText = searchExtractText(getEventJson(txn, decomp, ev.primaryKeyId));
+                        return normText;
+                    });
+                    if (matched) {
                         if (ReadRestrictor::shouldSendToSubscriber(packed, connAuthedPubkey)) {
                             sendEvent(connId, msg->sub.subId, getEventJson(txn, decomp, ev.primaryKeyId));
                         }

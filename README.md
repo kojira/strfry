@@ -397,6 +397,28 @@ After building dictionaries, selections of events can be compressed with `strfry
 
 
 
+### Search (NIP-50)
+
+strfry can optionally answer [NIP-50](https://github.com/nostr-protocol/nips/blob/master/50.md) `search` filters. Search is disabled by default. To enable it, set `search.enabled = true` in the config and restart. Events written after that are indexed automatically. To index events that are already in the DB, run:
+
+    strfry search reindex
+
+`search.kinds` selects the event kinds to index (default `0, 1, 30023`). For kind 0, the `name`, `display_name`, `about` and `nip05` fields of the profile are indexed. For other kinds, the `content` and the `title`, `subject` and `summary` tags are indexed. URLs and `nostr:` URIs are not indexed.
+
+The index is designed to stay small and to work with languages that are not separated by spaces:
+
+* Space-separated words are indexed as single tokens (case-insensitive, fullwidth ASCII folded).
+* Text in Japanese, Chinese and Korean is indexed as overlapping 2-character tokens.
+* Only one entry is stored per (token, event). No word positions are stored.
+
+A query is split into terms by spaces, and an event matches if its text contains every term. Candidates come from the index and are always verified against the event text, so 2-character tokens don't cause false positives. Results are returned in reverse order of when they were stored by the relay (which is usually close to newest first), and can be combined with the other filter fields. NIP-50 extensions such as `language:en` are ignored.
+
+`strfry search stats` shows the size of the index, and `strfry search tokens <text>` shows how a text would be indexed.
+
+Search filters are not supported for negentropy, sync or router.
+
+
+
 ## Learn More
 
 For details on strfry's architecture, see the [architecture.md](https://github.com/hoytech/strfry/blob/master/docs/architecture.md) document.

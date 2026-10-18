@@ -110,6 +110,11 @@ tablesRaw:
   EventPayload:
     flags: 'MDB_INTEGERKEY'
 
+  ## NIP-50 search index (only populated if search.enabled is true)
+  ## keys are tokens, vals are levIds (5-byte big-endian), one per (token, event)
+  SearchIndex:
+    flags: 'MDB_DUPSORT | MDB_DUPFIXED'
+
 config:
   - name: db
     desc: "Directory that contains the strfry LMDB database"
@@ -150,3 +155,18 @@ config:
   - name: events__maxTagValSize
     desc: "Maximum size for tag values, in bytes"
     default: 1024
+
+  - name: search__enabled
+    desc: "Enable NIP-50 full-text search. After enabling on an existing DB, run 'strfry search reindex'"
+    default: false
+    noReload: true
+  - name: search__kinds
+    desc: "Comma-separated list of event kinds to index for search"
+    default: "0, 1, 30023"
+    noReload: true
+  - name: search__maxPrefixTokens
+    desc: "Single-character CJK search terms are matched with a prefix scan over this many index keys at most"
+    default: 2000
+  - name: search__maxCandidates
+    desc: "Maximum number of events whose text is verified per search filter (limits the cost of very common terms)"
+    default: 100000

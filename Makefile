@@ -36,3 +36,10 @@ test-subid: build/subid_tests
 
 build/subid_tests: test/tests/SubIdTests.cpp build/golpe.h
 	$(CXX) $(CXXFLAGS) $(INCS) $< -o $@
+
+.PHONY: test-search-tokenizer
+test-search-tokenizer: build/search_tokenizer_tests
+	build/search_tokenizer_tests
+
+build/search_tokenizer_tests: test/tests/SearchTokenizerTests.cpp src/SearchTokenizer.h
+	$(CXX) $(CXXFLAGS) -Isrc $< -o $@

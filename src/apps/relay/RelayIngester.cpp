@@ -346,6 +346,7 @@ void RelayServer::ingesterProcessNegentropy(lmdb::txn &txn, RelayServerCtx &rsct
         if (!filterJson.is_object()) throw herr("negentropy filter must be an object");
 
         NostrFilterGroup filter(filterJson, maxFilterLimit);
+        if (filter.hasSearch()) throw herr("search filters are not supported for negentropy");
 
         // if the filter group contains no filter that has a kind that is not restricted,
         // that means an unauthenticated client won't be able to see anything

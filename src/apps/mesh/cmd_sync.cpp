@@ -71,6 +71,7 @@ void cmd_sync(const std::vector<std::string> &subArgs) {
     if (args["--timeout"]) timeout = args["--timeout"].asLong();
 
     auto filterCompiled = NostrFilterGroup(filterJson);
+    if (filterCompiled.hasSearch()) throw herr("search filters are not supported for sync");
 
     std::optional<uint64_t> treeId;
     negentropy::storage::Vector storageVector;
