@@ -35,8 +35,8 @@ std::string searchExtractText(const tao::json::value &eventJson) {
     uint64_t kind = kindV && kindV->is_unsigned() ? kindV->get_unsigned() : 0;
 
     if (contentV && contentV->is_string()) {
-        if (kind == 0) {
-            // Profile metadata: index selected fields of the JSON-encoded content
+        if (kind == 0 || kind == 40 || kind == 41) {
+            // Profile (0) and channel (40 create, 41 metadata) events: index selected fields of the JSON-encoded content
             try {
                 auto meta = tao::json::from_string(contentV->get_string());
                 if (meta.is_object()) {
