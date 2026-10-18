@@ -111,6 +111,7 @@ struct Router {
 
                 filterStr = newFilterStr;
                 filterCompiled.addFilters(newFilter);
+                if (filterCompiled.hasSearch()) throw herr("search filters are not supported in router");
                 filter = newFilter;
             }
 

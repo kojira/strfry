@@ -2,6 +2,7 @@
 
 #include "events.h"
 #include "jsonParseUtils.h"
+#include "SearchIndex.h"
 
 
 std::string nostrJsonToPackedEvent(const tao::json::value &v) {
@@ -237,6 +238,16 @@ std::string_view getEventJson(lmdb::txn &txn, Decompressor &decomp, uint64_t lev
 // Do not use externally: does not handle negentropy trees
 
 bool deleteEventBasic(lmdb::txn &txn, uint64_t levId) {
+    if (searchEnabled()) {
+        auto view = env.lookup_Event(txn, levId);
+        std::string_view eventPayload;
+
+        if (view && searchIsIndexedKind(PackedEventView(view->buf).kind()) && env.dbi_EventPayload.get(txn, lmdb::to_sv<uint64_t>(levId), eventPayload)) {
+            thread_local Decompressor decomp;
+            searchUnindexEvent(txn, levId, PackedEventView(view->buf).kind(), getEventJson(txn, decomp, levId, eventPayload));
+        }
+    }
+
     bool deleted = env.dbi_EventPayload.del(txn, lmdb::to_sv<uint64_t>(levId));
     env.delete_Event(txn, levId);
     return deleted;
@@ -407,6 +418,8 @@ void writeEvents(lmdb::txn &txn, NegentropyFilterCache &neFilterCache, std::vect
                 tmpBuf += '\x00';
                 tmpBuf += ev.jsonStr;
                 env.dbi_EventPayload.put(txn, lmdb::to_sv<uint64_t>(ev.levId), tmpBuf);
+
+                searchIndexEvent(txn, ev.levId, packed.kind(), ev.jsonStr);
 
                 updateNegentropy(PackedEventView(ev.packedStr), true);
 

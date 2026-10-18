@@ -5,6 +5,7 @@
 #include "Subscription.h"
 #include "filters.h"
 #include "events.h"
+#include "SearchIndex.h"
 
 
 struct DBScan : NonCopyable {
@@ -101,8 +102,24 @@ struct DBScan : NonCopyable {
     uint64_t nextInitIndex = 0;
     uint64_t approxWork = 0;
 
+    // Search scans: candidates are computed up-front from the search index (see initSearch())
+    bool isSearch = false;
+    bool searchInited = false;
+    std::vector<uint64_t> searchCandidates; // levIds, descending
+    size_t searchCursor = 0;
+    uint64_t searchVerified = 0;
+    Decompressor searchDecomp;
+
     DBScan(const NostrFilter &f) : f(f) {
         indexOnly = f.indexOnlyScans;
+
+        if (f.search) {
+            isSearch = true;
+            indexOnly = false;
+            desc = "Search";
+            initialScanDepth = refillScanDepth = 0;
+            return;
+        }
 
         if (f.ids) {
             indexDbi = env.dbi_Event__id;
@@ -226,7 +243,120 @@ struct DBScan : NonCopyable {
         refillScanDepth = 10 * initialScanDepth;
     }
 
+    // Posting list for one token, as levIds, ascending
+    static void readPostings(lmdb::txn &txn, std::string_view token, std::vector<uint64_t> &out) {
+        auto cursor = lmdb::cursor::open(txn, env.dbi_SearchIndex);
+        std::string_view k = token, v;
+
+        if (!cursor.get(k, v, MDB_SET_KEY)) return;
+        if (!cursor.get(k, v, MDB_GET_MULTIPLE)) return;
+
+        do {
+            for (size_t i = 0; i + search::postingBytes <= v.size(); i += search::postingBytes) {
+                out.push_back(search::decodePosting(v.substr(i, search::postingBytes)));
+            }
+        } while (cursor.get(k, v, MDB_NEXT_MULTIPLE));
+    }
+
+    // Union of posting lists of all tokens that start with prefix, as levIds, ascending and unique
+    static void readPrefixPostings(lmdb::txn &txn, std::string_view prefix, std::vector<uint64_t> &out) {
+        auto cursor = lmdb::cursor::open(txn, env.dbi_SearchIndex);
+        std::string_view k = prefix, v;
+        uint64_t numKeys = 0;
+
+        if (!cursor.get(k, v, MDB_SET_RANGE)) return;
+
+        while (k.starts_with(prefix)) {
+            if (++numKeys > cfg().search__maxPrefixTokens) break;
+
+            std::string key(k);
+            readPostings(txn, key, out);
+
+            k = key;
+            if (!cursor.get(k, v, MDB_SET_KEY)) break;
+            if (!cursor.get(k, v, MDB_NEXT_NODUP)) break;
+        }
+
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+    }
+
+    void initSearch(lmdb::txn &txn) {
+        searchInited = true;
+
+        // Every token list required by any term. Each list is ascending.
+        std::vector<std::vector<uint64_t>> lists;
+
+        for (const auto &term : f.search->terms) {
+            for (const auto &tok : term.exact) {
+                auto &l = lists.emplace_back();
+                readPostings(txn, tok, l);
+                if (l.empty()) return; // no results
+            }
+
+            for (const auto &tok : term.prefix) {
+                auto &l = lists.emplace_back();
+                readPrefixPostings(txn, tok, l);
+                if (l.empty()) return;
+            }
+        }
+
+        if (lists.empty()) return;
+
+        std::sort(lists.begin(), lists.end(), [](const auto &a, const auto &b){ return a.size() < b.size(); });
+
+        // Intersect, starting from the smallest list
+        std::vector<uint64_t> result = std::move(lists[0]);
+
+        for (size_t i = 1; i < lists.size() && result.size(); i++) {
+            std::vector<uint64_t> tmp;
+            std::set_intersection(result.begin(), result.end(), lists[i].begin(), lists[i].end(), std::back_inserter(tmp));
+            result.swap(tmp);
+        }
+
+        approxWork += result.size();
+
+        // Newest first. levIds are assigned in insertion order, which approximates created_at order.
+        std::reverse(result.begin(), result.end());
+
+        searchCandidates.swap(result);
+    }
+
+    bool scanSearch(lmdb::txn &txn, const std::function<bool(uint64_t)> &handleEvent, const std::function<bool(uint64_t)> &doPause) {
+        if (!searchInited) initSearch(txn);
+
+        while (searchCursor < searchCandidates.size()) {
+            approxWork += 10;
+            if (doPause(approxWork)) return false;
+
+            uint64_t levId = searchCandidates[searchCursor++];
+
+            auto view = env.lookup_Event(txn, levId);
+            if (!view) continue; // deleted
+
+            PackedEventView packed(view->buf);
+            if (!f.doesMatchExceptSearch(packed)) continue; // cheap checks, before loading the event text
+
+            if (++searchVerified > cfg().search__maxCandidates) return true;
+
+            std::string normText;
+
+            bool matched = f.doesMatch(packed, [&]() -> std::string_view {
+                std::string_view eventPayload;
+                if (!env.dbi_EventPayload.get(txn, lmdb::to_sv<uint64_t>(levId), eventPayload)) return "";
+                normText = searchExtractText(getEventJson(txn, searchDecomp, levId, eventPayload));
+                return normText;
+            });
+
+            if (matched && handleEvent(levId)) return true;
+        }
+
+        return true;
+    }
+
     bool scan(lmdb::txn &txn, const std::function<bool(uint64_t)> &handleEvent, const std::function<bool(uint64_t)> &doPause) {
+        if (isSearch) return scanSearch(txn, handleEvent, doPause);
+
         auto cmp = [](auto &a, auto &b){
             return a.created() == b.created() ? a.levId() > b.levId() : a.created() > b.created();
         };

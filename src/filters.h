@@ -4,6 +4,11 @@
 #include "golpe.h"
 
 #include "jsonParseUtils.h"
+#include "SearchTokenizer.h"
+
+
+bool searchEnabled();
+bool searchIsIndexedKind(uint64_t kind);
 
 
 struct FilterSetBytes : NonCopyable {
@@ -114,6 +119,7 @@ struct NostrFilter : NonCopyable {
     std::optional<FilterSetBytes> authors;
     std::optional<FilterSetUint> kinds;
     flat_hash_map<char, FilterSetBytes> tags;
+    std::optional<search::SearchQuery> search;
 
     uint64_t since = 0;
     uint64_t until = MAX_U64;
@@ -193,6 +199,18 @@ struct NostrFilter : NonCopyable {
                 } catch (std::exception &e) {
                     throw herr("error parsing ", k, ": ", e.what());
                 }
+            } else if (k == "search") {
+                if (!v.is_string()) throw herr("search not a string");
+                if (!searchEnabled()) throw herr("search is not enabled on this relay");
+
+                const auto &q = v.get_string();
+                if (std::all_of(q.begin(), q.end(), [](char c){ return search::isAsciiSpace(c); })) continue; // empty search is ignored
+
+                try {
+                    search.emplace(q);
+                } catch (std::exception &e) {
+                    throw herr("error parsing search: ", e.what());
+                }
             } else if (k == "since") {
                 since = jsonGetUnsigned(v, "error parsing since");
             } else if (k == "until") {
@@ -208,7 +226,7 @@ struct NostrFilter : NonCopyable {
 
         if (limit > maxFilterLimit) limit = maxFilterLimit;
 
-        indexOnlyScans = (numMajorFields <= 1) || (numMajorFields == 2 && authors && kinds);
+        indexOnlyScans = !search && (numMajorFields <= 1) || (numMajorFields == 2 && authors && kinds);
     }
 
     bool doesMatchTimes(uint64_t created) const {
@@ -217,7 +235,22 @@ struct NostrFilter : NonCopyable {
         return true;
     }
 
+    // Filters with a search field can only be matched with the event's text: see the overload below
     bool doesMatch(PackedEventView ev) const {
+        if (search) throw herr("search filter can't be matched without event text");
+        return doesMatchExceptSearch(ev);
+    }
+
+    // getNormText must return the event's normalised search text (see searchExtractText()).
+    // It is only called if the event matches all the other fields of the filter.
+    bool doesMatch(PackedEventView ev, const std::function<std::string_view()> &getNormText) const {
+        if (!doesMatchExceptSearch(ev)) return false;
+        if (!search) return true;
+        if (!searchIsIndexedKind(ev.kind())) return false;
+        return search->matches(getNormText());
+    }
+
+    bool doesMatchExceptSearch(PackedEventView ev) const {
         if (neverMatch) return false;
 
         if (!doesMatchTimes(ev.created_at())) return false;
@@ -244,7 +277,7 @@ struct NostrFilter : NonCopyable {
     }
 
     bool isFullDbQuery() {
-        return !ids && !authors && !kinds && tags.size() == 0;
+        return !ids && !authors && !kinds && tags.size() == 0 && !search;
     }
 };
 
@@ -288,6 +321,22 @@ struct NostrFilterGroup : NonCopyable {
     bool doesMatch(PackedEventView ev) const {
         for (const auto &f : filters) {
             if (f.doesMatch(ev)) return true;
+        }
+
+        return false;
+    }
+
+    bool doesMatch(PackedEventView ev, const std::function<std::string_view()> &getNormText) const {
+        for (const auto &f : filters) {
+            if (f.doesMatch(ev, getNormText)) return true;
+        }
+
+        return false;
+    }
+
+    bool hasSearch() const {
+        for (const auto &f : filters) {
+            if (f.search) return true;
         }
 
         return false;
